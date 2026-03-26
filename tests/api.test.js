@@ -12,7 +12,12 @@ if (fs.existsSync(dbPath)) {
 process.env.MAIL_DB_PATH = dbPath;
 
 const { createApp } = require('../server');
-const { db, getAccounts, getMessagesForAccount } = require('../src/db');
+const {
+  db,
+  getAccounts,
+  getGroups,
+  getMessagesForAccount,
+} = require('../src/db');
 
 function oauthPayload(overrides = {}) {
   return {
@@ -37,7 +42,7 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
-  db.exec('DELETE FROM messages; DELETE FROM accounts;');
+  db.exec("DELETE FROM messages; DELETE FROM accounts; DELETE FROM groups WHERE name != 'default';");
 });
 
 afterAll(() => {
@@ -277,5 +282,87 @@ describe('api', () => {
 
     expect(syncRes.body.items.filter((item) => item.ok)).toHaveLength(2);
     expect(sleepCalls).toEqual([25]);
+  });
+
+  it('creates groups, assigns them in batch, and falls back to default on delete', async () => {
+    const app = createApp();
+    const first = await request(app).post('/api/accounts').send(oauthPayload({ email: 'group-first@example.com' })).expect(201);
+    const second = await request(app).post('/api/accounts').send(oauthPayload({ email: 'group-second@example.com' })).expect(201);
+
+    const createGroupRes = await request(app)
+      .post('/api/groups')
+      .send({ name: 'test', color: '#f2b04b' })
+      .expect(201);
+
+    expect(createGroupRes.body.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: 'default' }),
+        expect.objectContaining({ name: 'test', display_name: 'test', color: '#f2b04b' }),
+      ]),
+    );
+
+    const assignRes = await request(app)
+      .put('/api/accounts/batch-group')
+      .send({ ids: [first.body.id, second.body.id], group_name: 'test' })
+      .expect(200);
+
+    expect(assignRes.body.count).toBe(2);
+    expect(assignRes.body.accounts.filter((item) => item.group_name === 'test')).toHaveLength(2);
+
+    const deleteGroupRes = await request(app)
+      .delete('/api/groups/test')
+      .expect(200);
+
+    expect(deleteGroupRes.body.items).toEqual([expect.objectContaining({ name: 'default' })]);
+    expect(getAccounts().every((item) => item.group_name === 'default')).toBe(true);
+    expect(getGroups()).toEqual([expect.objectContaining({ name: 'default' })]);
+  });
+
+  it('copies selected accounts in multiple batch formats', async () => {
+    const app = createApp();
+    const first = await request(app)
+      .post('/api/accounts')
+      .send(oauthPayload({ email: 'copy-first@example.com', password: 'copy-pass-1' }))
+      .expect(201);
+    const second = await request(app)
+      .post('/api/accounts')
+      .send(oauthPayload({ email: 'copy-second@example.com', password: 'copy-pass-2' }))
+      .expect(201);
+
+    const accountRes = await request(app)
+      .post('/api/accounts/copy')
+      .send({ ids: [first.body.id, second.body.id], format: 'account' })
+      .expect(200);
+    expect(accountRes.body.text).toBe('copy-first@example.com\ncopy-second@example.com');
+
+    const passwordRes = await request(app)
+      .post('/api/accounts/copy')
+      .send({ ids: [first.body.id, second.body.id], format: 'password' })
+      .expect(200);
+    expect(passwordRes.body.text).toBe('copy-pass-1\ncopy-pass-2');
+
+    const pairRes = await request(app)
+      .post('/api/accounts/copy')
+      .send({ ids: [first.body.id, second.body.id], format: 'account-password' })
+      .expect(200);
+    expect(pairRes.body.text).toBe(
+      'copy-first@example.com----copy-pass-1\ncopy-second@example.com----copy-pass-2',
+    );
+  });
+
+  it('batch deletes selected accounts', async () => {
+    const app = createApp();
+    const first = await request(app).post('/api/accounts').send(oauthPayload({ email: 'delete-first@example.com' })).expect(201);
+    const second = await request(app).post('/api/accounts').send(oauthPayload({ email: 'delete-second@example.com' })).expect(201);
+    await request(app).post('/api/accounts').send(oauthPayload({ email: 'delete-third@example.com' })).expect(201);
+
+    const deleteRes = await request(app)
+      .post('/api/accounts/batch-delete')
+      .send({ ids: [first.body.id, second.body.id] })
+      .expect(200);
+
+    expect(deleteRes.body.count).toBe(2);
+    expect(deleteRes.body.accounts).toHaveLength(1);
+    expect(deleteRes.body.accounts[0].email).toBe('delete-third@example.com');
   });
 });

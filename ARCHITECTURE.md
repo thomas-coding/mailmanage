@@ -5,7 +5,7 @@
   - [server.js](/D:/workspace/code/mail/server.js): Express app factory, API routes, server startup
   - [public/index.html](/D:/workspace/code/mail/public/index.html): single-page admin UI
 - Main modules:
-  - [src/db.js](/D:/workspace/code/mail/src/db.js): SQLite schema, migrations, account/message persistence
+  - [src/db.js](/D:/workspace/code/mail/src/db.js): SQLite schema, migrations, group/account/message persistence
   - [src/importExport.js](/D:/workspace/code/mail/src/importExport.js): text and spreadsheet parsing, txt export
   - [src/oauth.js](/D:/workspace/code/mail/src/oauth.js): Microsoft token refresh
   - [src/outlookApi.js](/D:/workspace/code/mail/src/outlookApi.js): Outlook mail REST inbox sync for OAuth accounts
@@ -17,10 +17,18 @@
 
 ## Request Flow
 - Import text/file -> parse in `src/importExport.js` -> persist through `src/db.js`
+- Group create/delete and batch group assignment -> `server.js` -> `src/db.js`
+- Batch copy and batch delete -> `server.js` -> `src/db.js`
 - Sync request -> `server.js` paced batch controller -> `src/mailService.js`
 - Outlook OAuth account -> `src/outlookApi.js` -> Outlook REST inbox endpoint
 - Non-Outlook/password path -> IMAP via `imapflow`
 - Synced messages are normalized into the `messages` table and shown in the UI
+
+## Group And Batch Behavior
+- Groups are stored in a dedicated SQLite table with display name and color.
+- Accounts still store `group_name` as the assignment key, and account queries join the group table to expose `group_label` and `group_color`.
+- Deleting a custom group automatically moves affected accounts back to the built-in default group.
+- Batch copy formats are served by backend routes so formatting stays testable and consistent with the UI.
 
 ## Sync Behavior
 - `/api/accounts/sync` is intentionally synchronous and returns only after the requested accounts finish syncing.
@@ -43,6 +51,7 @@
 ## Important Decisions
 - Outlook OAuth sync does not currently use IMAP because the tested accounts refresh successfully but IMAP returns `UserDisabled` / `not connected`; REST inbox reads succeed.
 - To reduce provider throttling, bulk sync is paced in batches instead of firing all accounts back-to-back.
+- Group metadata is backend-owned instead of frontend-only so batch assignment, fallback, and future expansion stay consistent.
 - Test coverage is part of the delivery bar. New features need automated tests when practical; otherwise manual checklist updates are required.
 - Secrets and disposable live test credentials must remain local-only and untracked.
 

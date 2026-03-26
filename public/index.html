@@ -43,11 +43,23 @@
           <select id="groupFilter">
             <option value="">全部分组</option>
           </select>
-          <button id="openCreateBtn" class="btn btn-primary">新增账号</button>
-          <button id="openImportBtn" class="btn btn-warning">导入账号</button>
-          <button id="exportBtn" class="btn btn-amber">导出备份</button>
-          <button id="syncSelectedBtn" class="btn btn-success">同步选中</button>
-          <button id="syncAllBtn" class="btn btn-blue">同步全部</button>
+          <div class="toolbar-actions">
+            <button id="openCreateBtn" class="btn btn-primary">新增账号</button>
+            <button id="openImportBtn" class="btn btn-warning">导入账号</button>
+            <button id="exportBtn" class="btn btn-amber">导出备份</button>
+            <div class="dropdown">
+              <button id="copyMenuBtn" type="button" class="btn btn-copy">批量复制</button>
+              <div id="copyMenu" class="dropdown-menu hidden">
+                <button type="button" data-copy-format="account">批量复制账号</button>
+                <button type="button" data-copy-format="password">批量复制密码</button>
+                <button type="button" data-copy-format="account-password">批量复制账号----密码</button>
+              </div>
+            </div>
+            <button id="openGroupDialogBtn" class="btn btn-group">批量设置分组</button>
+            <button id="batchDeleteBtn" class="btn btn-danger">批量删除</button>
+            <button id="syncSelectedBtn" class="btn btn-success">同步选中</button>
+            <button id="syncAllBtn" class="btn btn-blue">同步全部</button>
+          </div>
         </section>
 
         <div id="syncNotice" class="sync-notice hidden" aria-live="polite"></div>
@@ -102,7 +114,11 @@
         </div>
         <div class="grid-two">
           <label>过期时间<input id="expiresAt" placeholder="2026-03-26 18:00:00" /></label>
-          <label>分组<input id="groupName" value="default" /></label>
+          <label>分组
+            <select id="groupName">
+              <option value="default">默认分组</option>
+            </select>
+          </label>
         </div>
         <div class="dialog-actions">
           <button type="button" class="btn btn-light" data-close-dialog="accountDialog">取消</button>
@@ -156,6 +172,61 @@
           <button type="button" id="replaceImportBtn" class="btn btn-danger">覆盖导入</button>
         </div>
       </div>
+    </dialog>
+
+    <dialog id="groupDialog" class="dialog dialog-wide">
+      <div class="import-shell">
+        <div class="dialog-head">
+          <h3>批量设置分组</h3>
+          <button type="button" class="icon-btn" data-close-dialog="groupDialog">×</button>
+        </div>
+
+        <div class="selection-note">
+          <span id="selectedGroupCount">已选中 0 个账号</span>
+        </div>
+
+        <div class="group-toolbar">
+          <button id="openNewGroupBtn" type="button" class="btn btn-group">新增分组</button>
+          <button id="deleteGroupBtn" type="button" class="btn btn-danger">删除分组</button>
+        </div>
+
+        <label>分组名称
+          <select id="batchGroupSelect">
+            <option value="">请选择分组</option>
+          </select>
+        </label>
+
+        <div class="dialog-actions">
+          <button type="button" class="btn btn-light" data-close-dialog="groupDialog">取消</button>
+          <button type="button" id="confirmBatchGroupBtn" class="btn btn-primary">确定</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="newGroupDialog" class="dialog">
+      <form id="newGroupForm" method="dialog">
+        <div class="dialog-head">
+          <h3>新增分组</h3>
+          <button type="button" class="icon-btn" data-close-dialog="newGroupDialog">×</button>
+        </div>
+
+        <label>分组名称
+          <div class="input-with-counter">
+            <input id="newGroupName" maxlength="20" placeholder="请输入分组名称" required />
+            <span id="groupNameCounter">0 / 20</span>
+          </div>
+        </label>
+
+        <div>
+          <div class="palette-label">分组颜色</div>
+          <div id="groupColorPalette" class="color-palette"></div>
+        </div>
+
+        <div class="dialog-actions">
+          <button type="button" class="btn btn-light" data-close-dialog="newGroupDialog">取消</button>
+          <button type="submit" class="btn btn-primary">确定</button>
+        </div>
+      </form>
     </dialog>
 
     <div id="toast" class="toast hidden"></div>

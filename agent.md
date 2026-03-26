@@ -35,6 +35,7 @@ Read the minimum needed. Do not start by scanning the whole repository.
 - Outlook OAuth mailbox sync currently uses the Outlook mail REST endpoint, not IMAP.
 - IMAP code still exists for non-Outlook or future extensions.
 - `/api/accounts/sync` now runs accounts in paced batches with retry on provider throttling and transient network errors.
+- Group metadata now lives in SQLite and backs batch group assignment, batch delete, and batch copy features.
 - Quality bar: every feature change needs automated tests when practical, otherwise manual test steps must be updated.
 - Coverage gate: `lines >= 80`, `statements >= 80`, `functions >= 75`, `branches >= 60`.
 

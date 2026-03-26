@@ -12,7 +12,22 @@ const db = new Database(configuredDbPath);
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 
+const DEFAULT_GROUP_NAME = 'default';
+const DEFAULT_GROUP_LABEL = '默认分组';
+const DEFAULT_GROUP_COLOR = '#27c7c4';
+const FALLBACK_GROUP_COLOR = '#f2b04b';
+
 db.exec(`
+  CREATE TABLE IF NOT EXISTS groups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    display_name TEXT NOT NULL,
+    color TEXT NOT NULL DEFAULT '${FALLBACK_GROUP_COLOR}',
+    is_system INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+
   CREATE TABLE IF NOT EXISTS accounts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     email TEXT NOT NULL UNIQUE,
@@ -64,12 +79,34 @@ ensureAccountColumn('client_id', 'client_id TEXT');
 ensureAccountColumn('refresh_token', 'refresh_token TEXT');
 ensureAccountColumn('expires_at', 'expires_at TEXT');
 
+const ensureDefaultGroup = db.prepare(`
+  INSERT INTO groups (name, display_name, color, is_system)
+  VALUES (@name, @display_name, @color, 1)
+  ON CONFLICT(name) DO UPDATE SET
+    display_name = excluded.display_name,
+    color = excluded.color,
+    is_system = 1,
+    updated_at = CURRENT_TIMESTAMP
+`);
+
+ensureDefaultGroup.run({
+  name: DEFAULT_GROUP_NAME,
+  display_name: DEFAULT_GROUP_LABEL,
+  color: DEFAULT_GROUP_COLOR,
+});
+
 const accountSelect = `
   SELECT
     a.*,
-    COUNT(m.id) AS message_count
+    COUNT(m.id) AS message_count,
+    COALESCE(MAX(g.display_name), CASE
+      WHEN a.group_name = '${DEFAULT_GROUP_NAME}' THEN '${DEFAULT_GROUP_LABEL}'
+      ELSE a.group_name
+    END) AS group_label,
+    COALESCE(MAX(g.color), '${DEFAULT_GROUP_COLOR}') AS group_color
   FROM accounts a
   LEFT JOIN messages m ON m.account_id = a.id
+  LEFT JOIN groups g ON g.name = a.group_name
 `;
 
 const selectAllAccounts = db.prepare(`
@@ -124,6 +161,53 @@ const updateAccount = db.prepare(`
 const deleteAccount = db.prepare('DELETE FROM accounts WHERE id = ?');
 const deleteAllMessages = db.prepare('DELETE FROM messages');
 const deleteAllAccounts = db.prepare('DELETE FROM accounts');
+const deleteGroupByName = db.prepare('DELETE FROM groups WHERE name = ?');
+const selectAllGroups = db.prepare(`
+  SELECT
+    name,
+    display_name,
+    color,
+    is_system
+  FROM groups
+  ORDER BY
+    CASE WHEN name = '${DEFAULT_GROUP_NAME}' THEN 0 ELSE 1 END,
+    display_name COLLATE NOCASE ASC
+`);
+const selectGroupByName = db.prepare(`
+  SELECT
+    name,
+    display_name,
+    color,
+    is_system
+  FROM groups
+  WHERE name = ?
+`);
+const insertGroup = db.prepare(`
+  INSERT INTO groups (name, display_name, color, is_system)
+  VALUES (@name, @display_name, @color, @is_system)
+`);
+const updateGroup = db.prepare(`
+  UPDATE groups
+  SET
+    display_name = @display_name,
+    color = @color,
+    updated_at = CURRENT_TIMESTAMP
+  WHERE name = @name
+`);
+const updateAccountsGroup = db.prepare(`
+  UPDATE accounts
+  SET
+    group_name = @group_name,
+    updated_at = CURRENT_TIMESTAMP
+  WHERE id = @id
+`);
+const moveAccountsToDefaultGroup = db.prepare(`
+  UPDATE accounts
+  SET
+    group_name = '${DEFAULT_GROUP_NAME}',
+    updated_at = CURRENT_TIMESTAMP
+  WHERE group_name = ?
+`);
 
 const updateAccountStatus = db.prepare(`
   UPDATE accounts
@@ -171,9 +255,60 @@ const listMessagesForAccount = db.prepare(`
   LIMIT ?
 `);
 
+function normalizeGroupName(value) {
+  const text = String(value || '').trim();
+  if (!text || text === DEFAULT_GROUP_NAME || text === DEFAULT_GROUP_LABEL) {
+    return DEFAULT_GROUP_NAME;
+  }
+
+  return text;
+}
+
+function normalizeGroupDisplayName(name) {
+  return name === DEFAULT_GROUP_NAME ? DEFAULT_GROUP_LABEL : name;
+}
+
+function validateGroupName(name) {
+  if (name === DEFAULT_GROUP_NAME) {
+    return;
+  }
+
+  if (!name) {
+    throw new Error('分组名称不能为空');
+  }
+
+  if (name.length > 20) {
+    throw new Error('分组名称不能超过 20 个字符');
+  }
+}
+
+function validateGroupColor(color) {
+  if (!/^#[0-9a-fA-F]{6}$/.test(String(color || ''))) {
+    throw new Error('分组颜色格式不合法');
+  }
+}
+
+function ensureGroupExists(name, color = FALLBACK_GROUP_COLOR) {
+  const normalizedName = normalizeGroupName(name);
+  const existing = selectGroupByName.get(normalizedName);
+  if (existing) {
+    return existing;
+  }
+
+  insertGroup.run({
+    name: normalizedName,
+    display_name: normalizeGroupDisplayName(normalizedName),
+    color: normalizedName === DEFAULT_GROUP_NAME ? DEFAULT_GROUP_COLOR : color,
+    is_system: normalizedName === DEFAULT_GROUP_NAME ? 1 : 0,
+  });
+
+  return selectGroupByName.get(normalizedName);
+}
+
 function normalizeAccountInput(input) {
   const provider = String(input.provider || 'outlook').trim() || 'outlook';
   const hasOAuth = Boolean(String(input.client_id || '').trim() && String(input.refresh_token || '').trim());
+  const normalizedGroupName = normalizeGroupName(input.group_name);
 
   return {
     id: input.id ? Number(input.id) : undefined,
@@ -181,7 +316,7 @@ function normalizeAccountInput(input) {
     username: String(input.username || input.email || '').trim(),
     password: String(input.password || '').trim(),
     provider,
-    group_name: String(input.group_name || 'default').trim() || 'default',
+    group_name: normalizedGroupName,
     imap_host: String(input.imap_host || defaultImapHost(provider)).trim() || defaultImapHost(provider),
     imap_port: Number(input.imap_port || 993),
     secure: input.secure === false || input.secure === 0 || input.secure === '0' ? 0 : 1,
@@ -250,6 +385,7 @@ function getAccountById(id) {
 function saveAccount(input) {
   const account = normalizeAccountInput(input);
   validateAccountInput(account);
+  ensureGroupExists(account.group_name);
 
   if (!account.id) {
     const existing = selectAccountByEmail.get(account.email);
@@ -270,6 +406,15 @@ function saveAccount(input) {
 function removeAccount(id) {
   return deleteAccount.run(id);
 }
+
+const removeAccounts = db.transaction((ids) => {
+  let count = 0;
+  for (const id of ids) {
+    const result = deleteAccount.run(id);
+    count += result.changes;
+  }
+  return count;
+});
 
 const replaceAccounts = db.transaction((items) => {
   deleteAllMessages.run();
@@ -319,13 +464,79 @@ function getMessagesForAccount(accountId, limit = 30) {
   return listMessagesForAccount.all(accountId, limit);
 }
 
+function getGroups() {
+  return selectAllGroups.all();
+}
+
+function createGroup(input) {
+  const normalizedName = normalizeGroupName(input.name);
+  const color = String(input.color || FALLBACK_GROUP_COLOR).trim() || FALLBACK_GROUP_COLOR;
+  validateGroupName(normalizedName);
+  validateGroupColor(color);
+
+  if (normalizedName === DEFAULT_GROUP_NAME) {
+    return selectGroupByName.get(DEFAULT_GROUP_NAME);
+  }
+
+  const existing = selectGroupByName.get(normalizedName);
+  if (existing) {
+    throw new Error('分组名称已存在');
+  }
+
+  insertGroup.run({
+    name: normalizedName,
+    display_name: normalizeGroupDisplayName(normalizedName),
+    color,
+    is_system: 0,
+  });
+  return selectGroupByName.get(normalizedName);
+}
+
+function deleteGroup(name) {
+  const normalizedName = normalizeGroupName(name);
+  if (normalizedName === DEFAULT_GROUP_NAME) {
+    throw new Error('默认分组不能删除');
+  }
+
+  const existing = selectGroupByName.get(normalizedName);
+  if (!existing) {
+    throw new Error('分组不存在');
+  }
+
+  moveAccountsToDefaultGroup.run(normalizedName);
+  deleteGroupByName.run(normalizedName);
+}
+
+const assignGroupToAccounts = db.transaction((ids, groupName) => {
+  const normalizedName = normalizeGroupName(groupName);
+  ensureGroupExists(normalizedName);
+
+  let count = 0;
+  for (const id of ids) {
+    const result = updateAccountsGroup.run({
+      id,
+      group_name: normalizedName,
+    });
+    count += result.changes;
+  }
+  return count;
+});
+
 module.exports = {
   db,
+  DEFAULT_GROUP_NAME,
+  DEFAULT_GROUP_LABEL,
+  DEFAULT_GROUP_COLOR,
   getAccounts,
   getAccountById,
+  getGroups,
   saveAccount,
   removeAccount,
+  removeAccounts,
   replaceAccounts,
+  createGroup,
+  deleteGroup,
+  assignGroupToAccounts,
   setAccountStatus,
   setAccountTokens,
   upsertMessages,

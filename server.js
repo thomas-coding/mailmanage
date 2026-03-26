@@ -2,11 +2,16 @@ const path = require('path');
 const multer = require('multer');
 const express = require('express');
 const {
+  getGroups,
   getAccounts,
   getAccountById,
   saveAccount,
   removeAccount,
+  removeAccounts,
   replaceAccounts,
+  createGroup,
+  deleteGroup,
+  assignGroupToAccounts,
   setAccountStatus,
   setAccountTokens,
   upsertMessages,
@@ -73,6 +78,31 @@ function selectedAccounts(ids) {
 
   const wanted = new Set(ids.map(Number));
   return items.filter((item) => wanted.has(item.id));
+}
+
+function parseIds(ids) {
+  if (!Array.isArray(ids)) {
+    return [];
+  }
+
+  return ids
+    .map((id) => Number(id))
+    .filter((id) => Number.isInteger(id) && id > 0);
+}
+
+function buildCopyText(accounts, format) {
+  const normalizedFormat = String(format || 'account').trim();
+  const formatter = {
+    account: (account) => account.email || '',
+    password: (account) => account.password || '',
+    'account-password': (account) => `${account.email || ''}----${account.password || ''}`,
+  }[normalizedFormat];
+
+  if (!formatter) {
+    throw new Error('不支持的复制格式');
+  }
+
+  return accounts.map((account) => formatter(account)).join('\n');
 }
 
 async function syncSingleAccount(account, options) {
@@ -184,9 +214,33 @@ function createApp(options = {}) {
     res.json({ items: getAccounts() });
   });
 
+  app.get('/api/groups', (req, res) => {
+    res.json({ items: getGroups() });
+  });
+
+  app.post('/api/groups', asyncHandler(async (req, res) => {
+    const group = createGroup(req.body || {});
+    res.status(201).json({ item: group, items: getGroups(), accounts: getAccounts() });
+  }));
+
+  app.delete('/api/groups/:name', asyncHandler(async (req, res) => {
+    deleteGroup(decodeURIComponent(req.params.name));
+    res.json({ items: getGroups(), accounts: getAccounts() });
+  }));
+
   app.post('/api/accounts', asyncHandler(async (req, res) => {
     const account = saveAccount(req.body);
     res.status(201).json(account);
+  }));
+
+  app.put('/api/accounts/batch-group', asyncHandler(async (req, res) => {
+    const ids = parseIds(req.body.ids);
+    if (!ids.length) {
+      throw new Error('请先选择账号');
+    }
+
+    const count = assignGroupToAccounts(ids, req.body.group_name);
+    res.json({ count, accounts: getAccounts(), groups: getGroups() });
   }));
 
   app.put('/api/accounts/:id', asyncHandler(async (req, res) => {
@@ -197,6 +251,34 @@ function createApp(options = {}) {
   app.delete('/api/accounts/:id', asyncHandler(async (req, res) => {
     removeAccount(req.params.id);
     res.status(204).end();
+  }));
+
+  app.post('/api/accounts/batch-delete', asyncHandler(async (req, res) => {
+    const ids = parseIds(req.body.ids);
+    if (!ids.length) {
+      throw new Error('请先选择账号');
+    }
+
+    const count = removeAccounts(ids);
+    res.json({ count, accounts: getAccounts(), groups: getGroups() });
+  }));
+
+  app.post('/api/accounts/copy', asyncHandler(async (req, res) => {
+    const ids = parseIds(req.body.ids);
+    if (!ids.length) {
+      throw new Error('请先选择账号');
+    }
+
+    const items = selectedAccounts(ids);
+    if (!items.length) {
+      throw new Error('账号不存在');
+    }
+
+    res.json({
+      count: items.length,
+      format: req.body.format || 'account',
+      text: buildCopyText(items, req.body.format),
+    });
   }));
 
   app.post('/api/accounts/import-text', asyncHandler(async (req, res) => {
@@ -300,6 +382,7 @@ module.exports = {
   createApp,
   startServer,
   DEFAULT_SYNC_POLICY,
+  buildCopyText,
   isRetryableSyncError,
   getRetryDelayMs,
 };

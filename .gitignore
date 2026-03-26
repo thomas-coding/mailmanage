@@ -3,3 +3,4 @@ data/
 coverage/
 tests/.tmp/
 test_mail.txt
+test_mail*.txt
