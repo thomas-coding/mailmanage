@@ -180,4 +180,102 @@ describe('api', () => {
     );
     expect(getAccounts()[0].status).toBe('error');
   });
+
+  it('retries rate-limited sync and eventually succeeds', async () => {
+    let attempts = 0;
+    const sleepCalls = [];
+    const app = createApp({
+      syncPolicy: {
+        maxRetries: 2,
+        baseRetryDelayMs: 10,
+        maxRetryDelayMs: 20,
+        batchSize: 1,
+        interBatchDelayMs: 0,
+      },
+      sleepImpl: async (ms) => {
+        sleepCalls.push(ms);
+      },
+      syncInboxImpl: async () => {
+        attempts += 1;
+        if (attempts < 2) {
+          throw new Error('AADSTS90055: The server has terminated the request due to excessive request rate.');
+        }
+
+        return {
+          total: 1,
+          tokenUpdate: null,
+          messages: [
+            {
+              uid: 7,
+              subject: 'Retried OK',
+              fromName: 'Retry Sender',
+              fromAddress: 'retry@example.com',
+              receivedAt: '2026-03-26T10:00:00.000Z',
+              flags: [],
+            },
+          ],
+        };
+      },
+    });
+
+    const createRes = await request(app)
+      .post('/api/accounts')
+      .send(oauthPayload({ email: 'retry@example.com' }))
+      .expect(201);
+
+    const syncRes = await request(app)
+      .post('/api/accounts/sync')
+      .send({ ids: [createRes.body.id], limit: 2 })
+      .expect(200);
+
+    expect(syncRes.body.items[0]).toEqual(
+      expect.objectContaining({
+        email: 'retry@example.com',
+        ok: true,
+        synced: 1,
+        attempts: 2,
+      }),
+    );
+    expect(sleepCalls).toEqual([10]);
+    expect(getAccounts()[0].status).toBe('success');
+  });
+
+  it('paces batches between multiple accounts', async () => {
+    const sleepCalls = [];
+    const app = createApp({
+      syncPolicy: {
+        batchSize: 1,
+        interBatchDelayMs: 25,
+        maxRetries: 0,
+      },
+      sleepImpl: async (ms) => {
+        sleepCalls.push(ms);
+      },
+      syncInboxImpl: async (account) => ({
+        total: 1,
+        tokenUpdate: null,
+        messages: [
+          {
+            uid: account.email === 'first@example.com' ? 1 : 2,
+            subject: account.email,
+            fromName: 'Sender',
+            fromAddress: 'sender@example.com',
+            receivedAt: '2026-03-26T10:00:00.000Z',
+            flags: [],
+          },
+        ],
+      }),
+    });
+
+    const first = await request(app).post('/api/accounts').send(oauthPayload({ email: 'first@example.com' })).expect(201);
+    const second = await request(app).post('/api/accounts').send(oauthPayload({ email: 'second@example.com' })).expect(201);
+
+    const syncRes = await request(app)
+      .post('/api/accounts/sync')
+      .send({ ids: [first.body.id, second.body.id], limit: 2 })
+      .expect(200);
+
+    expect(syncRes.body.items.filter((item) => item.ok)).toHaveLength(2);
+    expect(sleepCalls).toEqual([25]);
+  });
 });

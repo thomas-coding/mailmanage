@@ -17,10 +17,16 @@
 
 ## Request Flow
 - Import text/file -> parse in `src/importExport.js` -> persist through `src/db.js`
-- Sync request -> `server.js` -> `src/mailService.js`
+- Sync request -> `server.js` paced batch controller -> `src/mailService.js`
 - Outlook OAuth account -> `src/outlookApi.js` -> Outlook REST inbox endpoint
 - Non-Outlook/password path -> IMAP via `imapflow`
 - Synced messages are normalized into the `messages` table and shown in the UI
+
+## Sync Behavior
+- `/api/accounts/sync` is intentionally synchronous and returns only after the requested accounts finish syncing.
+- Default sync policy is conservative: `batchSize=1`, `interBatchDelayMs=4000`, `maxRetries=3`.
+- Retryable failures include Microsoft throttling such as `AADSTS90055` plus transient timeout/network errors.
+- In this project, “同步” means refresh OAuth credentials if needed, call the Outlook inbox API, and store recent message metadata into SQLite. It is not a browser login flow.
 
 ## Conventions
 - Build/test commands:
@@ -36,10 +42,12 @@
 
 ## Important Decisions
 - Outlook OAuth sync does not currently use IMAP because the tested accounts refresh successfully but IMAP returns `UserDisabled` / `not connected`; REST inbox reads succeed.
+- To reduce provider throttling, bulk sync is paced in batches instead of firing all accounts back-to-back.
 - Test coverage is part of the delivery bar. New features need automated tests when practical; otherwise manual checklist updates are required.
 - Secrets and disposable live test credentials must remain local-only and untracked.
 
 ## Known Risks
 - Outlook REST endpoint `api/v2.0` is legacy; if Microsoft disables it, sync must move to another supported Outlook resource path.
+- Sync requests can take tens of seconds when many accounts are queued because pacing is deliberate.
 - Frontend has no browser automation yet; UI regressions rely on manual checklist.
 - Passwords and refresh tokens are stored locally in SQLite without encryption.

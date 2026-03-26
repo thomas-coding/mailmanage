@@ -16,9 +16,41 @@ const { syncInbox } = require('./src/mailService');
 const { parseTextAccounts, parseSpreadsheet, exportAccountsAsText } = require('./src/importExport');
 
 const PORT = process.env.PORT || 3060;
+const DEFAULT_SYNC_POLICY = {
+  batchSize: 1,
+  interAccountDelayMs: 0,
+  interBatchDelayMs: 4000,
+  maxRetries: 3,
+  baseRetryDelayMs: 8000,
+  maxRetryDelayMs: 45000,
+};
 
 function asyncHandler(fn) {
   return (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRetryableSyncError(error) {
+  const message = String(error?.message || '');
+  return /AADSTS90055|excessive request rate|throttl|temporar|timeout|ETIMEDOUT|ECONNRESET|fetch failed|network/i.test(message);
+}
+
+function getRetryDelayMs(error, attempt, policy) {
+  const message = String(error?.message || '');
+  const millisecondsMatch = message.match(/(\d+)\s*milliseconds/i);
+  if (millisecondsMatch) {
+    return Math.min(Number(millisecondsMatch[1]), policy.maxRetryDelayMs);
+  }
+
+  const secondsMatch = message.match(/(\d+)\s*seconds/i);
+  if (secondsMatch) {
+    return Math.min(Number(secondsMatch[1]) * 1000, policy.maxRetryDelayMs);
+  }
+
+  return Math.min(policy.baseRetryDelayMs * (2 ** Math.max(0, attempt - 1)), policy.maxRetryDelayMs);
 }
 
 function importAccounts(records, mode) {
@@ -43,8 +75,100 @@ function selectedAccounts(ids) {
   return items.filter((item) => wanted.has(item.id));
 }
 
+async function syncSingleAccount(account, options) {
+  const {
+    limit,
+    syncInboxImpl,
+    sleepImpl,
+    policy,
+  } = options;
+  let attempt = 0;
+  let lastError = null;
+
+  setAccountStatus(account.id, 'syncing', null, account.last_sync_at);
+
+  while (attempt <= policy.maxRetries) {
+    attempt += 1;
+
+    try {
+      const synced = await syncInboxImpl(account, { limit, mailbox: 'INBOX' });
+      if (synced.tokenUpdate) {
+        setAccountTokens(account.id, synced.tokenUpdate);
+      }
+      upsertMessages(account.id, 'INBOX', synced.messages);
+
+      const syncedAt = new Date().toISOString();
+      setAccountStatus(account.id, 'success', null, syncedAt);
+      return {
+        id: account.id,
+        email: account.email,
+        ok: true,
+        synced: synced.total,
+        syncedAt,
+        attempts: attempt,
+      };
+    } catch (error) {
+      lastError = error;
+      const canRetry = attempt <= policy.maxRetries && isRetryableSyncError(error);
+      if (!canRetry) {
+        break;
+      }
+
+      const retryDelayMs = getRetryDelayMs(error, attempt, policy);
+      await sleepImpl(retryDelayMs);
+    }
+  }
+
+  setAccountStatus(account.id, 'error', lastError?.message || '同步失败', account.last_sync_at);
+  return {
+    id: account.id,
+    email: account.email,
+    ok: false,
+    error: lastError?.message || '同步失败',
+    attempts: attempt,
+  };
+}
+
+async function syncAccountsInBatches(accounts, options) {
+  const {
+    limit,
+    syncInboxImpl,
+    sleepImpl,
+    policy,
+  } = options;
+  const results = [];
+
+  for (let start = 0; start < accounts.length; start += policy.batchSize) {
+    const batch = accounts.slice(start, start + policy.batchSize);
+
+    for (const account of batch) {
+      results.push(await syncSingleAccount(account, {
+        limit,
+        syncInboxImpl,
+        sleepImpl,
+        policy,
+      }));
+      if (policy.interAccountDelayMs > 0 && account !== batch[batch.length - 1]) {
+        await sleepImpl(policy.interAccountDelayMs);
+      }
+    }
+
+    const hasMoreBatches = start + policy.batchSize < accounts.length;
+    if (hasMoreBatches && policy.interBatchDelayMs > 0) {
+      await sleepImpl(policy.interBatchDelayMs);
+    }
+  }
+
+  return results;
+}
+
 function createApp(options = {}) {
   const syncInboxImpl = options.syncInboxImpl || syncInbox;
+  const sleepImpl = options.sleepImpl || sleep;
+  const syncPolicy = {
+    ...DEFAULT_SYNC_POLICY,
+    ...(options.syncPolicy || {}),
+  };
   const app = express();
   const upload = multer({
     storage: multer.memoryStorage(),
@@ -127,43 +251,19 @@ function createApp(options = {}) {
       ? req.body.ids.map(Number)
       : getAccounts().map((item) => item.id);
     const limit = Number(req.body.limit || 20);
-
-    const results = [];
-    for (const id of ids) {
-      const account = getAccountById(id);
-      if (!account) {
-        results.push({ id, ok: false, error: '账号不存在' });
-        continue;
-      }
-
-      setAccountStatus(account.id, 'syncing', null, account.last_sync_at);
-
-      try {
-        const synced = await syncInboxImpl(account, { limit, mailbox: 'INBOX' });
-        if (synced.tokenUpdate) {
-          setAccountTokens(account.id, synced.tokenUpdate);
-        }
-        upsertMessages(account.id, 'INBOX', synced.messages);
-
-        const syncedAt = new Date().toISOString();
-        setAccountStatus(account.id, 'success', null, syncedAt);
-        results.push({
-          id: account.id,
-          email: account.email,
-          ok: true,
-          synced: synced.total,
-          syncedAt,
-        });
-      } catch (error) {
-        setAccountStatus(account.id, 'error', error.message, account.last_sync_at);
-        results.push({
-          id: account.id,
-          email: account.email,
-          ok: false,
-          error: error.message,
-        });
-      }
-    }
+    const accounts = ids.map((id) => getAccountById(id)).filter(Boolean);
+    const missingResults = ids
+      .filter((id) => !accounts.some((account) => account.id === id))
+      .map((id) => ({ id, ok: false, error: '账号不存在', attempts: 0 }));
+    const results = [
+      ...missingResults,
+      ...await syncAccountsInBatches(accounts, {
+        limit,
+        syncInboxImpl,
+        sleepImpl,
+        policy: syncPolicy,
+      }),
+    ];
 
     res.json({ items: results, accounts: getAccounts() });
   }));
@@ -199,4 +299,7 @@ module.exports = {
   app,
   createApp,
   startServer,
+  DEFAULT_SYNC_POLICY,
+  isRetryableSyncError,
+  getRetryDelayMs,
 };
