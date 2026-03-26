@@ -7,6 +7,7 @@ const state = {
   group: '',
   importTab: 'text',
   importFile: null,
+  syncJob: null,
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -17,6 +18,28 @@ function showToast(message) {
   toast.classList.remove('hidden');
   clearTimeout(showToast.timer);
   showToast.timer = setTimeout(() => toast.classList.add('hidden'), 2600);
+}
+
+function setSyncNotice(message, options = {}) {
+  const notice = $('#syncNotice');
+  clearTimeout(setSyncNotice.timer);
+
+  if (!message) {
+    notice.textContent = '';
+    notice.className = 'sync-notice hidden';
+    return;
+  }
+
+  const tone = options.tone || 'info';
+  notice.textContent = message;
+  notice.className = `sync-notice ${tone}`;
+
+  if (options.autoHideMs) {
+    setSyncNotice.timer = setTimeout(() => {
+      notice.textContent = '';
+      notice.className = 'sync-notice hidden';
+    }, options.autoHideMs);
+  }
 }
 
 async function apiJson(url, options = {}) {
@@ -106,6 +129,12 @@ function getFilteredAccounts() {
   });
 }
 
+function renderAccountSummary() {
+  renderStats();
+  renderGroupFilter();
+  renderAccounts();
+}
+
 function renderStats() {
   const groups = new Set(state.accounts.map((item) => item.group_name));
   const oauthCount = state.accounts.filter((item) => item.auth_type === 'oauth').length;
@@ -143,7 +172,7 @@ function renderAccounts() {
       <td>${account.message_count || 0}</td>
       <td>
         <div class="table-actions">
-          <button class="action-view" data-view-id="${account.id}">查看</button>
+          <button class="action-view" data-view-id="${account.id}">同步查看</button>
           <button class="action-edit" data-edit-id="${account.id}">编辑</button>
           <button class="action-delete" data-delete-id="${account.id}">删除</button>
         </div>
@@ -194,6 +223,14 @@ function renderImportTab() {
     : '未选择文件';
 }
 
+function renderSyncControls() {
+  const syncing = Boolean(state.syncJob?.active);
+  $('#syncSelectedBtn').disabled = syncing;
+  $('#syncAllBtn').disabled = syncing;
+  $('#syncSelectedBtn').textContent = syncing ? '同步中...' : '同步选中';
+  $('#syncAllBtn').textContent = syncing ? '同步中...' : '同步全部';
+}
+
 async function loadAccounts() {
   const payload = await apiJson('/api/accounts');
   state.accounts = payload.items;
@@ -203,10 +240,9 @@ async function loadAccounts() {
     state.messages = [];
   }
 
-  renderStats();
-  renderGroupFilter();
-  renderAccounts();
+  renderAccountSummary();
   renderMessages();
+  renderSyncControls();
 }
 
 async function loadMessages(accountId) {
@@ -215,6 +251,7 @@ async function loadMessages(accountId) {
   state.messages = payload.items;
   renderAccounts();
   renderMessages();
+  renderSyncControls();
 }
 
 function fillAccountForm(account = null) {
@@ -270,9 +307,7 @@ async function importText(mode) {
   state.accounts = result.accounts;
   $('#importText').value = '';
   $('#importDialog').close();
-  renderStats();
-  renderGroupFilter();
-  renderAccounts();
+  renderAccountSummary();
   showToast(`${mode === 'replace' ? '覆盖' : '追加'}导入 ${result.count} 个账号`);
 }
 
@@ -302,9 +337,7 @@ async function importFile(mode) {
   $('#fileInput').value = '';
   $('#importDialog').close();
   renderImportTab();
-  renderStats();
-  renderGroupFilter();
-  renderAccounts();
+  renderAccountSummary();
   showToast(`${mode === 'replace' ? '覆盖' : '追加'}导入 ${result.count} 个账号`);
 }
 
@@ -347,29 +380,84 @@ async function deleteAccount(id) {
   await loadAccounts();
 }
 
-async function syncAccounts(ids) {
+async function syncAccounts(ids, options = {}) {
+  if (state.syncJob?.active) {
+    showToast('已有同步任务正在执行，请等待完成');
+    return;
+  }
+
   if (!ids.length) {
     showToast('请先选择账号');
     return;
   }
 
-  showToast('开始同步收件箱');
-  const result = await apiJson('/api/accounts/sync', {
-    method: 'POST',
-    body: JSON.stringify({ ids, limit: 20 }),
-  });
+  const viewAccountId = options.viewAccountId ? Number(options.viewAccountId) : null;
+  const syncingIds = new Set(ids);
+  state.syncJob = {
+    active: true,
+    ids: syncingIds,
+    startedAt: Date.now(),
+  };
+  state.accounts = state.accounts.map((account) => (
+    syncingIds.has(account.id)
+      ? { ...account, status: 'syncing' }
+      : account
+  ));
+  renderAccountSummary();
+  renderSyncControls();
+  setSyncNotice(
+    viewAccountId
+      ? '正在同步当前账号并准备打开最新邮件，完成前这条提示不会消失。'
+      : `正在同步 ${ids.length} 个账号。当前按分批串行执行，完成前这条提示不会消失，请以“同步完成”结果提示为准。`,
+    { tone: 'info' },
+  );
 
-  state.accounts = result.accounts;
-  renderStats();
-  renderGroupFilter();
-  renderAccounts();
+  try {
+    const result = await apiJson('/api/accounts/sync', {
+      method: 'POST',
+      body: JSON.stringify({ ids, limit: 20 }),
+    });
 
-  if (state.activeAccountId) {
-    await loadMessages(state.activeAccountId);
+    state.accounts = result.accounts;
+    renderAccountSummary();
+
+    const targetAccountId = viewAccountId || state.activeAccountId;
+    if (targetAccountId) {
+      await loadMessages(targetAccountId);
+    } else {
+      renderSyncControls();
+    }
+
+    const failures = result.items.filter((item) => !item.ok);
+    const successCount = result.items.length - failures.length;
+    setSyncNotice(
+      viewAccountId
+        ? (
+          failures.length
+            ? `单账号同步完成，但本次同步失败。已保留表格状态，你仍可查看本地缓存邮件。`
+            : '单账号同步完成，已打开最新邮件预览。'
+        )
+        : failures.length
+        ? `同步完成：成功 ${successCount} 个，失败 ${failures.length} 个。表格状态已刷新。`
+        : `同步完成：${successCount} 个账号全部成功。表格状态已刷新。`,
+      { tone: failures.length ? 'warning' : 'success', autoHideMs: 5000 },
+    );
+    showToast(
+      viewAccountId
+        ? (failures.length ? '同步失败，已打开本地缓存邮件' : '同步完成，已打开最新邮件')
+        : (failures.length ? `同步完成，失败 ${failures.length} 个` : '同步完成'),
+    );
+  } catch (error) {
+    await loadAccounts().catch(() => {});
+    if (viewAccountId) {
+      await loadMessages(viewAccountId).catch(() => {});
+    }
+    setSyncNotice(`同步请求失败：${error.message}`, { tone: 'error', autoHideMs: 6000 });
+    showToast(error.message);
+  } finally {
+    state.syncJob = null;
+    renderSyncControls();
   }
-
-  const failures = result.items.filter((item) => !item.ok);
-  showToast(failures.length ? `同步完成，失败 ${failures.length} 个` : '同步完成');
 }
 
 function setImportFile(file) {
@@ -406,11 +494,11 @@ function bindEvents() {
   });
 
   $('#syncSelectedBtn').addEventListener('click', () => {
-    syncAccounts(Array.from(state.selectedIds)).catch((error) => showToast(error.message));
+    syncAccounts(Array.from(state.selectedIds));
   });
 
   $('#syncAllBtn').addEventListener('click', () => {
-    syncAccounts(state.accounts.map((item) => item.id)).catch((error) => showToast(error.message));
+    syncAccounts(state.accounts.map((item) => item.id));
   });
 
   $('#refreshMessagesBtn').addEventListener('click', () => {
@@ -492,7 +580,9 @@ function bindEvents() {
 
     if (target.matches('[data-view-id]')) {
       event.stopPropagation();
-      loadMessages(Number(target.dataset.viewId)).catch((error) => showToast(error.message));
+      syncAccounts([Number(target.dataset.viewId)], {
+        viewAccountId: Number(target.dataset.viewId),
+      });
       return;
     }
 
@@ -519,4 +609,5 @@ function bindEvents() {
 
 renderImportTab();
 bindEvents();
+renderSyncControls();
 loadAccounts().catch((error) => showToast(error.message));
