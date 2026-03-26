@@ -1,0 +1,5 @@
+node_modules/
+data/
+coverage/
+tests/.tmp/
+test_mail.txt

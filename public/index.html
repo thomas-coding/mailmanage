@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>邮箱管家</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="layout">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">✉</div>
+          <div>
+            <h1>邮箱管家</h1>
+            <p>本地批量邮箱管理系统</p>
+          </div>
+        </div>
+
+        <nav class="menu">
+          <button class="menu-item active">总览</button>
+          <button class="menu-item">邮箱列表</button>
+          <button class="menu-item">分组管理</button>
+        </nav>
+
+        <section class="sidebar-card">
+          <h2>OAuth 导入</h2>
+          <p>支持文本导入、文件上传、追加导入、覆盖导入和 TXT 备份导出。</p>
+        </section>
+      </aside>
+
+      <main class="content">
+        <header class="page-head">
+          <div>
+            <h2>邮箱管理</h2>
+            <p>管理 Outlook OAuth 账号，批量同步收件箱邮件</p>
+          </div>
+          <div class="stats" id="stats"></div>
+        </header>
+
+        <section class="toolbar">
+          <input id="searchInput" type="search" placeholder="搜索邮箱地址..." />
+          <select id="groupFilter">
+            <option value="">全部分组</option>
+          </select>
+          <button id="openCreateBtn" class="btn btn-primary">新增账号</button>
+          <button id="openImportBtn" class="btn btn-warning">导入账号</button>
+          <button id="exportBtn" class="btn btn-amber">导出备份</button>
+          <button id="syncSelectedBtn" class="btn btn-success">同步选中</button>
+          <button id="syncAllBtn" class="btn btn-blue">同步全部</button>
+        </section>
+
+        <section class="panel">
+          <table>
+            <thead>
+              <tr>
+                <th><input id="selectAll" type="checkbox" /></th>
+                <th>#</th>
+                <th>邮箱地址</th>
+                <th>Client ID</th>
+                <th>分组</th>
+                <th>过期时间</th>
+                <th>状态</th>
+                <th>邮件数</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="accountRows"></tbody>
+          </table>
+          <div id="emptyState" class="empty hidden">还没有邮箱账号，先新增或导入。</div>
+        </section>
+
+        <section class="message-panel">
+          <div class="message-head">
+            <div>
+              <h3>邮件预览</h3>
+              <p id="messageHint">点击账号后显示最近同步到本地的邮件</p>
+            </div>
+            <button id="refreshMessagesBtn" class="btn btn-light">刷新列表</button>
+          </div>
+          <div id="messageList" class="message-list"></div>
+        </section>
+      </main>
+    </div>
+
+    <dialog id="accountDialog" class="dialog">
+      <form id="accountForm" method="dialog">
+        <div class="dialog-head">
+          <h3 id="accountDialogTitle">新增账号</h3>
+          <button type="button" class="icon-btn" data-close-dialog="accountDialog">×</button>
+        </div>
+        <input type="hidden" id="accountId" />
+        <div class="grid-two">
+          <label>邮箱地址<input id="email" required /></label>
+          <label>密码<input id="password" /></label>
+        </div>
+        <div class="grid-two">
+          <label>Client ID<input id="clientId" required /></label>
+          <label>刷新令牌<input id="refreshToken" required /></label>
+        </div>
+        <div class="grid-two">
+          <label>过期时间<input id="expiresAt" placeholder="2026-03-26 18:00:00" /></label>
+          <label>分组<input id="groupName" value="default" /></label>
+        </div>
+        <div class="dialog-actions">
+          <button type="button" class="btn btn-light" data-close-dialog="accountDialog">取消</button>
+          <button type="submit" class="btn btn-primary">保存</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="importDialog" class="dialog dialog-wide">
+      <div class="import-shell">
+        <div class="dialog-head">
+          <h3>导入邮箱账号</h3>
+          <button type="button" class="icon-btn" data-close-dialog="importDialog">×</button>
+        </div>
+
+        <div class="import-tabs">
+          <button class="import-tab active" data-import-tab="text">文本导入</button>
+          <button class="import-tab" data-import-tab="file">文件上传</button>
+        </div>
+
+        <section class="import-pane" data-import-pane="text">
+          <div class="import-help">
+            <p>支持的格式（每行一个账号）：</p>
+            <ul>
+              <li>邮箱地址[TAB]密码[TAB]Client ID[TAB]刷新令牌</li>
+              <li>邮箱地址----密码----Client ID----刷新令牌</li>
+            </ul>
+            <p class="muted">可选第 5 列为过期时间，第 6 列为分组。</p>
+          </div>
+          <textarea id="importText" rows="10" placeholder="例如：&#10;user@example.com	password123	client_id	refresh_token&#10;user2@example.com----pass456----client_id2----token2"></textarea>
+        </section>
+
+        <section class="import-pane hidden" data-import-pane="file">
+          <div id="dropzone" class="dropzone">
+            <input id="fileInput" type="file" accept=".txt,.xlsx,.xls" hidden />
+            <div class="dropzone-icon">↑</div>
+            <p>将文件拖到此处，或<span id="pickFileBtn">点击上传</span></p>
+          </div>
+          <div class="upload-help">
+            <p>支持 `.txt`、`.xlsx`、`.xls` 格式</p>
+            <p>TXT: 每行一个账号，使用 Tab 或 ---- 分隔</p>
+            <p>Excel: 第1列邮箱，第2列密码，第3列ClientID，第4列刷新令牌，第5列过期时间，第6列分组</p>
+            <p class="success-text">导入后按文件中的顺序显示</p>
+            <p id="selectedFileName" class="muted"></p>
+          </div>
+        </section>
+
+        <div class="dialog-actions">
+          <button type="button" class="btn btn-light" data-close-dialog="importDialog">取消</button>
+          <button type="button" id="appendImportBtn" class="btn btn-primary">追加导入</button>
+          <button type="button" id="replaceImportBtn" class="btn btn-danger">覆盖导入</button>
+        </div>
+      </div>
+    </dialog>
+
+    <div id="toast" class="toast hidden"></div>
+    <script src="/app.js"></script>
+  </body>
+</html>
