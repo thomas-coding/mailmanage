@@ -27,7 +27,10 @@ const state = {
   groups: [],
   selectedIds: new Set(),
   activeAccountId: null,
+  activeMessageId: null,
   messages: [],
+  currentMailbox: 'INBOX',
+  mailSearch: '',
   search: '',
   group: '',
   importTab: 'text',
@@ -274,31 +277,88 @@ function renderAccounts() {
 }
 
 function renderMessages() {
-  const target = $('#messageList');
-  $('#messageHint').textContent = state.activeAccountId
-    ? '显示当前账号最近同步到本地数据库的邮件'
-    : '点击账号后显示最近同步到本地的邮件';
+  const dialog = $('#mailViewerDialog');
+  const list = $('#mailThreadList');
+  const detail = $('#mailDetail');
+  const account = state.accounts.find((item) => item.id === state.activeAccountId);
+
+  document.querySelectorAll('[data-mailbox-tab]').forEach((tab) => {
+    tab.classList.toggle('active', tab.dataset.mailboxTab === state.currentMailbox);
+  });
+
+  $('#mailViewerTitle').textContent = account
+    ? `邮件列表 - ${account.email}`
+    : '邮件列表';
+  $('#mailViewerHint').textContent = account
+    ? '点选左侧邮件查看详情'
+    : '同步后显示该账号最近邮件';
+  $('#mailSearchInput').value = state.mailSearch;
+
+  if (!dialog.open) {
+    return;
+  }
 
   if (!state.activeAccountId) {
-    target.innerHTML = '<div class="empty">请选择一个账号查看邮件</div>';
-    return;
-  }
-
-  if (!state.messages.length) {
-    target.innerHTML = '<div class="empty">这个账号还没有同步到本地邮件</div>';
-    return;
-  }
-
-  target.innerHTML = state.messages.map((message) => `
-    <article class="message-item">
-      <h4>${escapeHtml(message.subject || '(无主题)')}</h4>
-      <div class="message-meta">
-        <span>${escapeHtml(message.from_name || message.from_address || '未知发件人')}</span>
-        <span>${escapeHtml(formatDateTime(message.received_at))}</span>
+    list.innerHTML = '<div class="empty">请选择账号</div>';
+    detail.innerHTML = `
+      <div class="mail-empty">
+        <h4>请选择一个账号</h4>
+        <p>点击“同步查看”后会在这里显示邮件列表和详情。</p>
       </div>
-      <p>${escapeHtml(message.from_address || '')}</p>
-    </article>
+    `;
+    return;
+  }
+
+  const filtered = state.messages.filter((message) => {
+    const matchMailbox = (message.mailbox || 'INBOX') === state.currentMailbox;
+    const keyword = state.mailSearch.trim().toLowerCase();
+    const haystack = [
+      message.subject,
+      message.from_name,
+      message.from_address,
+      message.snippet,
+    ].join(' ').toLowerCase();
+    return matchMailbox && (!keyword || haystack.includes(keyword));
+  });
+
+  if (!filtered.length) {
+    list.innerHTML = '<div class="empty">当前邮箱暂无邮件</div>';
+    detail.innerHTML = `
+      <div class="mail-empty">
+        <h4>没有可显示的邮件</h4>
+        <p>${state.currentMailbox === 'TRASH' ? '当前垃圾箱暂无本地邮件。' : '请尝试刷新邮件或切换搜索条件。'}</p>
+      </div>
+    `;
+    state.activeMessageId = null;
+    return;
+  }
+
+  if (!filtered.some((message) => message.id === state.activeMessageId)) {
+    state.activeMessageId = filtered[0].id;
+  }
+
+  list.innerHTML = filtered.map((message) => `
+    <button type="button" class="mail-thread-item ${message.id === state.activeMessageId ? 'active' : ''}" data-message-id="${message.id}">
+      <span class="mail-thread-subject">${escapeHtml(message.subject || '(无主题)')}</span>
+      <span class="mail-thread-meta">${escapeHtml(message.from_name || message.from_address || '未知发件人')}</span>
+      <span class="mail-thread-snippet">${escapeHtml((message.snippet || message.from_address || '').slice(0, 72) || '暂无摘要')}</span>
+      <span class="mail-thread-meta">${escapeHtml(formatDateTime(message.received_at))}</span>
+    </button>
   `).join('');
+
+  const activeMessage = filtered.find((message) => message.id === state.activeMessageId) || filtered[0];
+  detail.innerHTML = `
+    <div>
+      <h4>${escapeHtml(activeMessage.subject || '(无主题)')}</h4>
+      <div class="mail-detail-meta">来自 ${escapeHtml(activeMessage.from_name || activeMessage.from_address || '未知发件人')}</div>
+      <div class="mail-detail-meta">${escapeHtml(formatDateTime(activeMessage.received_at))}</div>
+    </div>
+    <div class="mail-detail-card">
+      <div class="mail-detail-meta">发件人</div>
+      <div>${escapeHtml(activeMessage.from_address || '-')}</div>
+    </div>
+    <div class="mail-detail-card mail-detail-content">${escapeHtml(activeMessage.snippet || '当前版本仅同步邮件摘要与元数据，尚未拉取完整正文。')}</div>
+  `;
 }
 
 function renderImportTab() {
@@ -382,6 +442,7 @@ async function refreshOverview() {
 
   if (state.activeAccountId && !state.accounts.some((item) => item.id === state.activeAccountId)) {
     state.activeAccountId = null;
+    state.activeMessageId = null;
     state.messages = [];
   }
 
@@ -390,8 +451,12 @@ async function refreshOverview() {
 
 async function loadMessages(accountId) {
   state.activeAccountId = accountId;
+  state.activeMessageId = null;
   const payload = await apiJson(`/api/accounts/${accountId}/messages?limit=30`);
   state.messages = payload.items;
+  if (!$('#mailViewerDialog').open) {
+    $('#mailViewerDialog').showModal();
+  }
   renderAccounts();
   renderMessages();
   renderToolbarState();
@@ -516,6 +581,7 @@ async function deleteAccount(id) {
   state.selectedIds.delete(id);
   if (state.activeAccountId === id) {
     state.activeAccountId = null;
+    state.activeMessageId = null;
     state.messages = [];
   }
   showToast('账号已删除');
@@ -674,6 +740,7 @@ async function deleteSelectedAccounts() {
 
   if (state.activeAccountId && selectedIds.includes(state.activeAccountId)) {
     state.activeAccountId = null;
+    state.activeMessageId = null;
     state.messages = [];
   }
 
@@ -829,6 +896,19 @@ function bindEvents() {
     }
   });
 
+  $('#mailSearchInput').addEventListener('input', (event) => {
+    state.mailSearch = event.target.value;
+    renderMessages();
+  });
+
+  document.querySelectorAll('[data-mailbox-tab]').forEach((button) => {
+    button.addEventListener('click', () => {
+      state.currentMailbox = button.dataset.mailboxTab;
+      state.activeMessageId = null;
+      renderMessages();
+    });
+  });
+
   $('#selectAll').addEventListener('change', (event) => {
     const checked = event.target.checked;
     const filteredIds = getFilteredAccounts().map((item) => item.id);
@@ -881,6 +961,11 @@ function bindEvents() {
   document.querySelectorAll('[data-close-dialog]').forEach((button) => {
     button.addEventListener('click', () => {
       $(`#${button.dataset.closeDialog}`).close();
+      if (button.dataset.closeDialog === 'mailViewerDialog') {
+        state.mailSearch = '';
+        state.currentMailbox = 'INBOX';
+        state.activeMessageId = null;
+      }
     });
   });
 
@@ -949,9 +1034,18 @@ function bindEvents() {
 
     if (target.matches('[data-view-id]')) {
       event.stopPropagation();
+      state.currentMailbox = 'INBOX';
+      state.mailSearch = '';
       syncAccounts([Number(target.dataset.viewId)], {
         viewAccountId: Number(target.dataset.viewId),
       });
+      return;
+    }
+
+    if (target.matches('[data-message-id]')) {
+      event.stopPropagation();
+      state.activeMessageId = Number(target.dataset.messageId);
+      renderMessages();
       return;
     }
 
@@ -972,6 +1066,8 @@ function bindEvents() {
 
     const row = target.closest('[data-account-row]');
     if (row) {
+      state.currentMailbox = 'INBOX';
+      state.mailSearch = '';
       loadMessages(Number(row.dataset.accountRow)).catch((error) => showToast(error.message));
     }
   });

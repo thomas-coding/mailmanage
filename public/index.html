@@ -84,16 +84,6 @@
           <div id="emptyState" class="empty hidden">还没有邮箱账号，先新增或导入。</div>
         </section>
 
-        <section class="message-panel">
-          <div class="message-head">
-            <div>
-              <h3>邮件预览</h3>
-              <p id="messageHint">点击账号后显示最近同步到本地的邮件</p>
-            </div>
-            <button id="refreshMessagesBtn" class="btn btn-light">刷新列表</button>
-          </div>
-          <div id="messageList" class="message-list"></div>
-        </section>
       </main>
     </div>
 
@@ -227,6 +217,33 @@
           <button type="submit" class="btn btn-primary">确定</button>
         </div>
       </form>
+    </dialog>
+
+    <dialog id="mailViewerDialog" class="dialog mail-viewer-dialog">
+      <div class="mail-viewer-shell">
+        <div class="dialog-head">
+          <div>
+            <h3 id="mailViewerTitle">邮件列表</h3>
+            <p id="mailViewerHint" class="muted">同步后显示该账号最近邮件</p>
+          </div>
+          <button type="button" class="icon-btn" data-close-dialog="mailViewerDialog">×</button>
+        </div>
+
+        <div class="mail-viewer-tabs">
+          <button type="button" class="mail-tab active" data-mailbox-tab="INBOX">收件箱</button>
+          <button type="button" class="mail-tab" data-mailbox-tab="TRASH">垃圾箱</button>
+        </div>
+
+        <div class="mail-viewer-toolbar">
+          <input id="mailSearchInput" type="search" placeholder="搜索主题/发件人..." />
+          <button id="refreshMessagesBtn" class="btn btn-light">刷新邮件</button>
+        </div>
+
+        <div class="mail-viewer-grid">
+          <aside id="mailThreadList" class="mail-thread-list"></aside>
+          <section id="mailDetail" class="mail-detail"></section>
+        </div>
+      </div>
     </dialog>
 
     <div id="toast" class="toast hidden"></div>
